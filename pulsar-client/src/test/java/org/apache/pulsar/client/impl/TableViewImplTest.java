@@ -731,6 +731,89 @@ public class TableViewImplTest {
     }
 
     @Test(timeOut = 10_000)
+    @SuppressWarnings("unchecked")
+    public void testStopReleasesTheRetryWaitingForItsDelay() throws Exception {
+        PulsarClientImpl client = mock(PulsarClientImpl.class);
+        ClientConfigurationData clientConf = new ClientConfigurationData();
+        clientConf.setInitialBackoffIntervalNanos(TimeUnit.MINUTES.toNanos(1));
+        when(client.getConfiguration()).thenReturn(clientConf);
+        ReaderBuilder<String> builder = mock(ReaderBuilder.class, RETURNS_SELF);
+        when(client.newReader(Schema.STRING)).thenReturn(builder);
+        Reader<String> reader = mock(Reader.class);
+        when(builder.createAsync()).thenReturn(CompletableFuture.completedFuture(reader));
+        when(reader.closeAsync()).thenReturn(CompletableFuture.completedFuture(null));
+        when(reader.readNextAsync()).thenAnswer(inv -> failedRead());
+        TableViewConfigurationData conf = new TableViewConfigurationData();
+        conf.setTopicName(TAIL_RETRY_TOPIC);
+        // The real timer: the retry waits a minute, well beyond this test.
+        TableViewImpl<String> tableView = new TableViewImpl<>(client, Schema.STRING, conf);
+        tableView.start().get(5, TimeUnit.SECONDS);
+        assertTrue(tableView.isRetryWaiting(), "The failed read must leave a retry waiting for its delay");
+
+        tableView.closeAsync().get(5, TimeUnit.SECONDS);
+
+        // The queued task keeps only this reference to what it would run; with it gone, the closed table view
+        // is not reachable from the delay queue any more.
+        assertFalse(tableView.isRetryWaiting(), "The stop must release the retry");
+    }
+
+    @Test(timeOut = 10_000)
+    @SuppressWarnings("unchecked")
+    public void testFailureAfterTheStopQueuesNoRetry() throws Exception {
+        TopicCompactionStrategy<String> strategy = mock(TopicCompactionStrategy.class);
+        when(strategy.shouldKeepLeft(any(), any())).thenThrow(new IllegalStateException("strategy failure"));
+        try (TailRetryFixture f = new TailRetryFixture(strategy)) {
+            CompletableFuture<Message<String>> read = new CompletableFuture<>();
+            when(f.reader.readNextAsync()).thenReturn(read);
+            f.tableView.start().get(5, TimeUnit.SECONDS);
+            f.tableView.closeAsync().get(5, TimeUnit.SECONDS);
+            // The read that was in flight completes after the close, and handling its message fails.
+            Message<String> message = mock(Message.class);
+            when(message.getTopicName()).thenReturn(TAIL_RETRY_TOPIC);
+            when(message.getMessageId()).thenReturn(new MessageIdImpl(1, 0, -1));
+            when(message.hasKey()).thenReturn(true);
+            when(message.getKey()).thenReturn("key");
+            when(message.size()).thenReturn(1);
+            when(message.getValue()).thenReturn("value");
+
+            read.complete(message);
+
+            assertEquals(f.retries.size(), 0, "Nothing is left to retry once the tail reads have stopped");
+        }
+    }
+
+    @Test(timeOut = 10_000)
+    public void testStopWhileARetryIsBeingQueuedReleasesIt() throws Exception {
+        try (TailRetryFixture f = new TailRetryFixture()) {
+            when(f.reader.readNextAsync()).thenReturn(failedRead());
+            // The table view closes while the retry is being queued, once the stop cause was found unset.
+            doAnswer(inv -> {
+                f.tableView.closeAsync();
+                return TAIL_RETRY_TOPIC;
+            }).when(f.reader).getTopic();
+
+            f.tableView.start().get(5, TimeUnit.SECONDS);
+
+            assertFalse(f.tableView.isRetryWaiting(), "The retry queued across the stop must be released");
+            f.runLatestRetry();
+            verify(f.reader, times(1)).readNextAsync();
+        }
+    }
+
+    @Test(timeOut = 10_000)
+    public void testARetryThatHasRunIsNoLongerWaiting() throws Exception {
+        try (TailRetryFixture f = new TailRetryFixture()) {
+            when(f.reader.readNextAsync()).thenReturn(failedRead(), new CompletableFuture<>());
+            f.tableView.start().get(5, TimeUnit.SECONDS);
+            assertTrue(f.tableView.isRetryWaiting(), "The failed read must leave a retry waiting for its delay");
+
+            f.runLatestRetry();
+
+            assertFalse(f.tableView.isRetryWaiting(), "A read is in flight again, no retry waits");
+        }
+    }
+
+    @Test(timeOut = 10_000)
     public void testFailedReadIsNotRetriedOnceTheClientIsClosed() throws Exception {
         try (TailRetryFixture f = new TailRetryFixture()) {
             // A reader that keeps failing its reads without being closed, as one that has failed for good does:

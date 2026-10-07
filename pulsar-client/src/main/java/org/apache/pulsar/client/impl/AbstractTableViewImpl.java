@@ -118,6 +118,13 @@ abstract class AbstractTableViewImpl<T, V> implements TableView<V> {
      * {@code get()} as usual.
      */
     private final AtomicReference<Throwable> stopCause;
+    /**
+     * The tail-read retry waiting for its delay, if any: at most one, as a retry is only queued by the failure of
+     * the one read in flight. The task queued for it on the delayed executor reaches the table view only
+     * through this reference, which the stop empties, so a closed table view does not stay reachable from the
+     * delay queue until the delay elapses. Set before the stop cause is checked, see {@link #stopTailReads}.
+     */
+    private final AtomicReference<Runnable> waitingRetry;
 
     /**
      * The refreshes that have not completed yet, from the moment {@link #refreshAsync()} is called, so that
@@ -153,6 +160,7 @@ abstract class AbstractTableViewImpl<T, V> implements TableView<V> {
                 .maxBackoff(Duration.ofNanos(client.getConfiguration().getMaxBackoffIntervalNanos()))
                 .build();
         this.stopCause = new AtomicReference<>();
+        this.waitingRetry = new AtomicReference<>();
         this.activeRefreshes = ConcurrentHashMap.newKeySet();
         ReaderBuilder<T> readerBuilder = client.newReader(schema)
                 .topic(conf.getTopicName())
@@ -440,6 +448,12 @@ abstract class AbstractTableViewImpl<T, V> implements TableView<V> {
         return !activeRefreshes.isEmpty() || !pendingRefreshRequests.isEmpty();
     }
 
+    /** Whether a tail-read retry is waiting for its delay, see {@link #waitingRetry}. */
+    @VisibleForTesting
+    boolean isRetryWaiting() {
+        return waitingRetry.get() != null;
+    }
+
     private CompletableFuture<Void> readAllExistingMessages(Reader<T> reader) {
         long startTime = System.nanoTime();
         AtomicLong messagesRead = new AtomicLong();
@@ -596,13 +610,29 @@ abstract class AbstractTableViewImpl<T, V> implements TableView<V> {
     }
 
     private void scheduleTailReadRetry(Reader<T> reader, Throwable ex) {
+        // readTailMessages() checks the stop cause itself: a retry still waiting at a stop reads nothing.
+        Runnable retry = () -> readTailMessages(reader);
+        waitingRetry.set(retry);
+        if (stopCause.get() != null) {
+            // Stopped already, or while the retry was being queued, maybe before it was there for
+            // stopTailReads() to release: the read was in flight at the stop and nothing is read any more.
+            waitingRetry.compareAndSet(retry, null);
+            return;
+        }
         long delayMillis = tailReadBackoff.next().toMillis();
         log.warn().attr("reader", reader.getTopic())
                 .attr("retryDelayMs", delayMillis)
                 .exception(ex)
                 .log("Reader was interrupted while reading tail messages. Retrying..");
-        // readTailMessages() checks the stop cause itself: a retry still waiting at a stop reads nothing.
-        runAfterDelay(delayMillis, () -> readTailMessages(reader));
+        // The queued task captures the reference, not the table view: once the stop has emptied it, nothing
+        // in the delay queue reaches the table view any more.
+        AtomicReference<Runnable> waiting = waitingRetry;
+        runAfterDelay(delayMillis, () -> {
+            Runnable retryToRun = waiting.getAndSet(null);
+            if (retryToRun != null) {
+                retryToRun.run();
+            }
+        });
     }
 
     /**
@@ -611,7 +641,9 @@ abstract class AbstractTableViewImpl<T, V> implements TableView<V> {
      * or, when it is shared, under it. No read is in flight while a retry waits, so the tail reads would end
      * there with nothing to record it, and the refreshes waiting for them would stay pending until the table
      * view is closed. The JDK's delayed executor does not depend on the client, so the retry still runs then,
-     * outside the client's threads, and finds what became of the reader and of the client.
+     * outside the client's threads, and finds what became of the reader and of the client. The task stays in
+     * its queue until the delay elapses, whatever happens to the table view: {@link #waitingRetry} keeps it
+     * from holding on to a closed one.
      */
     @VisibleForTesting
     void runAfterDelay(long delayMillis, Runnable retry) {
@@ -624,6 +656,9 @@ abstract class AbstractTableViewImpl<T, V> implements TableView<V> {
      */
     private void stopTailReads(Throwable cause) {
         stopCause.compareAndSet(null, cause);
+        // Release the retry waiting for its delay, if any. A retry queued meanwhile checks the cause after
+        // setting itself, so it is released either here or there.
+        waitingRetry.set(null);
         Throwable firstCause = stopCause.get();
         for (CompletableFuture<Void> refresh : activeRefreshes) {
             refresh.completeExceptionally(firstCause);
