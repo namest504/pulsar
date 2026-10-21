@@ -33,6 +33,11 @@ import static org.testng.Assert.assertNotNull;
 import static org.testng.Assert.assertNull;
 import static org.testng.Assert.assertTrue;
 import static org.testng.Assert.expectThrows;
+import io.opentelemetry.api.common.AttributeKey;
+import io.opentelemetry.sdk.OpenTelemetrySdk;
+import io.opentelemetry.sdk.metrics.SdkMeterProvider;
+import io.opentelemetry.sdk.metrics.data.LongPointData;
+import io.opentelemetry.sdk.testing.exporter.InMemoryMetricReader;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -63,6 +68,7 @@ import org.apache.pulsar.client.api.Schema;
 import org.apache.pulsar.client.api.TableView;
 import org.apache.pulsar.client.api.TopicMessageId;
 import org.apache.pulsar.client.impl.conf.ClientConfigurationData;
+import org.apache.pulsar.client.impl.metrics.InstrumentProvider;
 import org.apache.pulsar.client.util.ScheduledExecutorProvider;
 import org.apache.pulsar.common.topics.TopicCompactionStrategy;
 import org.apache.pulsar.common.util.FutureUtil;
@@ -80,6 +86,7 @@ public class TableViewImplTest {
     @SuppressWarnings("unchecked")
     public void setup() {
         client = mock(PulsarClientImpl.class);
+        when(client.instrumentProvider()).thenReturn(InstrumentProvider.NOOP);
         ConnectionPool connectionPool = mock(ConnectionPool.class);
         when(client.getCnxPool()).thenReturn(connectionPool);
         when(client.getConfiguration()).thenReturn(new ClientConfigurationData());
@@ -113,6 +120,7 @@ public class TableViewImplTest {
     @SuppressWarnings("unchecked")
     public void testTopicDomain(String topic, boolean persistent) throws Exception {
         PulsarClientImpl client = mock(PulsarClientImpl.class);
+        when(client.instrumentProvider()).thenReturn(InstrumentProvider.NOOP);
         ReaderBuilder<String> builder = mock(ReaderBuilder.class, RETURNS_SELF);
         Reader<String> reader = mock(Reader.class);
         when(client.getConfiguration()).thenReturn(new ClientConfigurationData());
@@ -154,6 +162,7 @@ public class TableViewImplTest {
     public void testRefreshWaitsForMessageToBeApplied(boolean skipped) throws Exception {
         String topic = "persistent://public/default/refresh-applied";
         PulsarClientImpl client = mock(PulsarClientImpl.class);
+        when(client.instrumentProvider()).thenReturn(InstrumentProvider.NOOP);
         ReaderBuilder<String> builder = mock(ReaderBuilder.class, RETURNS_SELF);
         Reader<String> reader = mock(Reader.class);
         when(client.getConfiguration()).thenReturn(new ClientConfigurationData());
@@ -242,8 +251,19 @@ public class TableViewImplTest {
          * @param strategy the compaction strategy the table view loads, or {@code null} for none
          * @param clientConf the client configuration, which holds the backoff settings
          */
-        @SuppressWarnings("unchecked")
         TailRetryFixture(TopicCompactionStrategy<String> strategy, ClientConfigurationData clientConf) {
+            this(strategy, clientConf, InstrumentProvider.NOOP);
+        }
+
+        /**
+         * @param strategy the compaction strategy the table view loads, or {@code null} for none
+         * @param clientConf the client configuration, which holds the backoff settings
+         * @param instrumentProvider the client's metrics
+         */
+        @SuppressWarnings("unchecked")
+        TailRetryFixture(TopicCompactionStrategy<String> strategy, ClientConfigurationData clientConf,
+                         InstrumentProvider instrumentProvider) {
+            when(client.instrumentProvider()).thenReturn(instrumentProvider);
             ReaderBuilder<String> builder = mock(ReaderBuilder.class, RETURNS_SELF);
             when(client.newReader(Schema.STRING)).thenReturn(builder);
             when(client.getConfiguration()).thenReturn(clientConf);
@@ -650,6 +670,7 @@ public class TableViewImplTest {
     @SuppressWarnings("unchecked")
     public void testNoTailReadStartsWhenTheTableViewClosesDuringTheInitialReplay() throws Exception {
         PulsarClientImpl client = mock(PulsarClientImpl.class);
+        when(client.instrumentProvider()).thenReturn(InstrumentProvider.NOOP);
         ReaderBuilder<String> builder = mock(ReaderBuilder.class, RETURNS_SELF);
         Reader<String> reader = mock(Reader.class);
         when(client.getConfiguration()).thenReturn(new ClientConfigurationData());
@@ -692,6 +713,7 @@ public class TableViewImplTest {
         });
         CountDownLatch clientClosed = new CountDownLatch(1);
         PulsarClientImpl client = mock(PulsarClientImpl.class);
+        when(client.instrumentProvider()).thenReturn(InstrumentProvider.NOOP);
         when(client.getConfiguration()).thenReturn(new ClientConfigurationData());
         ScheduledExecutorProvider provider = mock(ScheduledExecutorProvider.class);
         when(provider.getExecutor()).thenReturn(clientScheduler);
@@ -857,6 +879,88 @@ public class TableViewImplTest {
             assertTrue(refresh.isDone(), "The skipped message is processed: a refresh must not wait for it");
             refresh.get(5, TimeUnit.SECONDS);
         }
+    }
+
+    private static final String FAILED_MESSAGES_METRIC = "pulsar.client.table_view.message.failed";
+
+    @Test(timeOut = 10_000)
+    @SuppressWarnings("unchecked")
+    public void testHandlingFailureIsCountedAsAFailedMessage() throws Exception {
+        TopicCompactionStrategy<String> strategy = mock(TopicCompactionStrategy.class);
+        when(strategy.shouldKeepLeft(any(), any())).thenThrow(new IllegalStateException("strategy failure"));
+        InMemoryMetricReader metrics = InMemoryMetricReader.create();
+        try (TailRetryFixture f = new TailRetryFixture(strategy, new ClientConfigurationData(),
+                instrumentProvider(metrics))) {
+            Message<String> message = keyedMessage("value");
+            when(f.reader.readNextAsync()).thenReturn(CompletableFuture.completedFuture(message),
+                    new CompletableFuture<>());
+
+            f.tableView.start().get(5, TimeUnit.SECONDS);
+
+            assertEquals(failedMessages(metrics), 1, "A message whose handling throws must be counted");
+        }
+    }
+
+    @Test(timeOut = 10_000)
+    @SuppressWarnings("unchecked")
+    public void testDecodeFailureIsCountedAsAFailedMessage() throws Exception {
+        InMemoryMetricReader metrics = InMemoryMetricReader.create();
+        try (TailRetryFixture f = new TailRetryFixture(null, new ClientConfigurationData(),
+                instrumentProvider(metrics))) {
+            Message<String> message = keyedMessage("value");
+            when(message.getValue()).thenThrow(new IllegalArgumentException("cannot decode"));
+            when(f.reader.readNextAsync()).thenReturn(CompletableFuture.completedFuture(message),
+                    new CompletableFuture<>());
+
+            f.tableView.start().get(5, TimeUnit.SECONDS);
+
+            assertEquals(failedMessages(metrics), 1, "A message whose value cannot be decoded must be counted");
+        }
+    }
+
+    @Test(timeOut = 10_000)
+    @SuppressWarnings("unchecked")
+    public void testMessageSkippedByTheStrategyIsNotCountedAsFailed() throws Exception {
+        TopicCompactionStrategy<String> strategy = mock(TopicCompactionStrategy.class);
+        when(strategy.shouldKeepLeft(any(), any())).thenReturn(true);
+        InMemoryMetricReader metrics = InMemoryMetricReader.create();
+        try (TailRetryFixture f = new TailRetryFixture(strategy, new ClientConfigurationData(),
+                instrumentProvider(metrics))) {
+            Message<String> message = keyedMessage("value");
+            when(f.reader.readNextAsync()).thenReturn(CompletableFuture.completedFuture(message),
+                    new CompletableFuture<>());
+
+            f.tableView.start().get(5, TimeUnit.SECONDS);
+
+            assertEquals(failedMessages(metrics), 0, "A message the strategy chose to skip did not fail");
+        }
+    }
+
+    private static InstrumentProvider instrumentProvider(InMemoryMetricReader metrics) {
+        SdkMeterProvider meterProvider = SdkMeterProvider.builder().registerMetricReader(metrics).build();
+        return new InstrumentProvider(OpenTelemetrySdk.builder().setMeterProvider(meterProvider).build());
+    }
+
+    private static long failedMessages(InMemoryMetricReader metrics) {
+        return metrics.collectAllMetrics().stream()
+                .filter(metric -> metric.getName().equals(FAILED_MESSAGES_METRIC))
+                .flatMap(metric -> metric.getLongSumData().getPoints().stream())
+                .peek(point -> assertEquals(point.getAttributes().get(AttributeKey.stringKey("pulsar.namespace")),
+                        "tenant/ns", "The count must carry the namespace of the table view's topic"))
+                .mapToLong(LongPointData::getValue)
+                .sum();
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Message<String> keyedMessage(String value) {
+        Message<String> message = mock(Message.class);
+        when(message.getTopicName()).thenReturn(TAIL_RETRY_TOPIC);
+        when(message.getMessageId()).thenReturn(new MessageIdImpl(1, 0, -1));
+        when(message.hasKey()).thenReturn(true);
+        when(message.getKey()).thenReturn("key");
+        when(message.size()).thenReturn(1);
+        when(message.getValue()).thenReturn(value);
+        return message;
     }
 
     /**

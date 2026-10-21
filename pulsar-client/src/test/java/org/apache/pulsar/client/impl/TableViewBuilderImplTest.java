@@ -39,6 +39,7 @@ import org.apache.pulsar.client.api.Schema;
 import org.apache.pulsar.client.api.TableView;
 import org.apache.pulsar.client.impl.conf.ClientConfigurationData;
 import org.apache.pulsar.client.impl.conf.ReaderConfigurationData;
+import org.apache.pulsar.client.impl.metrics.InstrumentProvider;
 import org.apache.pulsar.common.topics.TopicCompactionStrategy;
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.BeforeClass;
@@ -62,6 +63,7 @@ public class TableViewBuilderImplTest {
         when(reader.readNextAsync()).thenReturn(readNextFuture);
         when(reader.getLastMessageIdsAsync()).thenReturn(CompletableFuture.completedFuture(List.of()));
         client = mock(PulsarClientImpl.class);
+        when(client.instrumentProvider()).thenReturn(InstrumentProvider.NOOP);
         ConnectionPool connectionPool = mock(ConnectionPool.class);
         when(client.getCnxPool()).thenReturn(connectionPool);
         when(client.getConfiguration()).thenReturn(new ClientConfigurationData());
