@@ -881,11 +881,11 @@ public class TableViewImplTest {
         }
     }
 
-    private static final String FAILED_MESSAGES_METRIC = "pulsar.client.table_view.message.failed";
+    private static final String DROPPED_MESSAGES_METRIC = "pulsar.client.table_view.message.dropped";
 
     @Test(timeOut = 10_000)
     @SuppressWarnings("unchecked")
-    public void testHandlingFailureIsCountedAsAFailedMessage() throws Exception {
+    public void testMessageWhoseHandlingThrowsIsCountedAsDropped() throws Exception {
         TopicCompactionStrategy<String> strategy = mock(TopicCompactionStrategy.class);
         when(strategy.shouldKeepLeft(any(), any())).thenThrow(new IllegalStateException("strategy failure"));
         InMemoryMetricReader metrics = InMemoryMetricReader.create();
@@ -897,13 +897,13 @@ public class TableViewImplTest {
 
             f.tableView.start().get(5, TimeUnit.SECONDS);
 
-            assertEquals(failedMessages(metrics), 1, "A message whose handling throws must be counted");
+            assertEquals(droppedMessages(metrics), 1, "A message whose handling throws must be counted");
         }
     }
 
     @Test(timeOut = 10_000)
     @SuppressWarnings("unchecked")
-    public void testDecodeFailureIsCountedAsAFailedMessage() throws Exception {
+    public void testMessageThatCannotBeDecodedIsCountedAsDropped() throws Exception {
         InMemoryMetricReader metrics = InMemoryMetricReader.create();
         try (TailRetryFixture f = new TailRetryFixture(null, new ClientConfigurationData(),
                 instrumentProvider(metrics))) {
@@ -914,13 +914,13 @@ public class TableViewImplTest {
 
             f.tableView.start().get(5, TimeUnit.SECONDS);
 
-            assertEquals(failedMessages(metrics), 1, "A message whose value cannot be decoded must be counted");
+            assertEquals(droppedMessages(metrics), 1, "A message whose value cannot be decoded must be counted");
         }
     }
 
     @Test(timeOut = 10_000)
     @SuppressWarnings("unchecked")
-    public void testMessageSkippedByTheStrategyIsNotCountedAsFailed() throws Exception {
+    public void testMessageSkippedByTheStrategyIsNotCountedAsDropped() throws Exception {
         TopicCompactionStrategy<String> strategy = mock(TopicCompactionStrategy.class);
         when(strategy.shouldKeepLeft(any(), any())).thenReturn(true);
         InMemoryMetricReader metrics = InMemoryMetricReader.create();
@@ -932,7 +932,7 @@ public class TableViewImplTest {
 
             f.tableView.start().get(5, TimeUnit.SECONDS);
 
-            assertEquals(failedMessages(metrics), 0, "A message the strategy chose to skip did not fail");
+            assertEquals(droppedMessages(metrics), 0, "A message the strategy chose to skip was not dropped");
         }
     }
 
@@ -941,9 +941,9 @@ public class TableViewImplTest {
         return new InstrumentProvider(OpenTelemetrySdk.builder().setMeterProvider(meterProvider).build());
     }
 
-    private static long failedMessages(InMemoryMetricReader metrics) {
+    private static long droppedMessages(InMemoryMetricReader metrics) {
         return metrics.collectAllMetrics().stream()
-                .filter(metric -> metric.getName().equals(FAILED_MESSAGES_METRIC))
+                .filter(metric -> metric.getName().equals(DROPPED_MESSAGES_METRIC))
                 .flatMap(metric -> metric.getLongSumData().getPoints().stream())
                 .peek(point -> assertEquals(point.getAttributes().get(AttributeKey.stringKey("pulsar.namespace")),
                         "tenant/ns", "The count must carry the namespace of the table view's topic"))

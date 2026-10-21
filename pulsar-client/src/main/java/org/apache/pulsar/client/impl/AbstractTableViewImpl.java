@@ -138,8 +138,11 @@ abstract class AbstractTableViewImpl<T, V> implements TableView<V> {
      */
     private final Set<CompletableFuture<Void>> activeRefreshes;
 
-    /** Messages read but not applied: the value could not be decoded or mapped, or applying it threw. */
-    private final Counter failedMessagesCounter;
+    /**
+     * Messages read but dropped: the value could not be decoded or mapped, or applying it threw. Also counted
+     * during the initial replay, where such a failure then fails the table view's creation.
+     */
+    private final Counter droppedMessagesCounter;
 
     /**
      * @param poolMessages whether the reader should use pooled messages. When enabled, the handled messages
@@ -167,10 +170,10 @@ abstract class AbstractTableViewImpl<T, V> implements TableView<V> {
                 .build();
         this.stopCause = new AtomicReference<>();
         this.activeRefreshes = ConcurrentHashMap.newKeySet();
-        this.failedMessagesCounter = client.instrumentProvider().newCounter(
-                "pulsar.client.table_view.message.failed", Unit.Messages,
-                "The number of messages read by the table view that could not be applied", conf.getTopicName(),
-                Attributes.empty());
+        this.droppedMessagesCounter = client.instrumentProvider().newCounter(
+                "pulsar.client.table_view.message.dropped", Unit.Messages,
+                "The number of messages read by the table view and dropped because they could not be applied",
+                conf.getTopicName(), Attributes.empty());
         ReaderBuilder<T> readerBuilder = client.newReader(schema)
                 .topic(conf.getTopicName())
                 .startMessageId(MessageId.earliest)
@@ -298,7 +301,7 @@ abstract class AbstractTableViewImpl<T, V> implements TableView<V> {
                     lastReadPositions.put(msg.getTopicName(), msg.getMessageId());
                 }
             } catch (Throwable t) {
-                failedMessagesCounter.increment();
+                droppedMessagesCounter.increment();
                 // The message is skipped, so it is processed as far as a refresh is concerned: one waiting for it
                 // completes now instead of waiting for the next message, which may never come on a quiet topic.
                 lastReadPositions.put(msg.getTopicName(), msg.getMessageId());
@@ -319,7 +322,7 @@ abstract class AbstractTableViewImpl<T, V> implements TableView<V> {
         try {
             cur = getValueIfPresent(msg);
         } catch (Throwable t) {
-            failedMessagesCounter.increment();
+            droppedMessagesCounter.increment();
             // The key keeps its previous value. A refresh must still observe this message as processed,
             // including when refreshAsync() is called from the error callback.
             lastReadPositions.put(msg.getTopicName(), msg.getMessageId());
