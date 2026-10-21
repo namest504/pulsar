@@ -42,6 +42,7 @@ import org.apache.pulsar.client.api.TableView;
 import org.apache.pulsar.client.api.TableViewMessageMapper;
 import org.apache.pulsar.client.api.TopicMessageId;
 import org.apache.pulsar.client.impl.conf.ClientConfigurationData;
+import org.apache.pulsar.client.impl.metrics.InstrumentProvider;
 import org.apache.pulsar.common.util.FutureUtil;
 import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.Test;
@@ -63,6 +64,7 @@ public class MappedTableViewImplTest {
     @SuppressWarnings("unchecked")
     public void setup() {
         client = mock(PulsarClientImpl.class);
+        when(client.instrumentProvider()).thenReturn(InstrumentProvider.NOOP);
         when(client.getConfiguration()).thenReturn(new ClientConfigurationData());
         ReaderBuilder<String> builder = mock(ReaderBuilder.class, RETURNS_SELF);
         reader = mock(Reader.class);
