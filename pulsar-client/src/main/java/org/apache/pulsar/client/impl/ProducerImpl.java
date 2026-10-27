@@ -171,6 +171,8 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
     // completes only after it, so a producer whose key cannot be loaded fails its creation whether the connection
     // or the key load finishes first.
     private final CompletableFuture<Void> firstKeyLoad;
+    // Guarded by the producer lock; reconnects must not restart the key-loading timeout.
+    private boolean firstKeyLoadTimeoutScheduled;
 
     private final Map<String, String> metadata;
 
@@ -2414,11 +2416,12 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
                 .attr("retry", t.getClass().getName())
                 .exceptionMessage(t)
                 .log("Closed producer because get an error that does not support to retry");
+        // Preserve the creation failure before closeProducerTasks supplies its fallback close exception.
+        producerCreatedFuture.completeExceptionally(t);
         closeAsync().whenComplete((v, ex) -> {
             if (ex != null) {
                 log.error().exception(ex).log("Failed to close producer on TopicDoesNotExistException.");
             }
-            producerCreatedFuture.completeExceptionally(t);
         });
     }
 
@@ -2486,6 +2489,22 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
         if (firstKeyLoad == null) {
             producerCreatedFuture.complete(this);
             return;
+        }
+        if (!firstKeyLoad.isDone() && !firstKeyLoadTimeoutScheduled) {
+            firstKeyLoadTimeoutScheduled = true;
+            // The broker request has succeeded, so its timeout no longer bounds creation. Use the remaining
+            // operation budget for the key wait, on the timer rather than the event loop running the key reader.
+            long remainingMs = Math.max(0, producerDeadline - System.currentTimeMillis());
+            Timeout timeout = client.timer().newTimeout(ignored -> {
+                if (!firstKeyLoad.isDone() && producerCreatedFuture.completeExceptionally(
+                        new PulsarClientException.TimeoutException(
+                                "Timed out waiting for the first encryption key for producer " + producerName
+                                        + " on topic " + topic))) {
+                    closeAsync();
+                }
+            }, remainingMs, TimeUnit.MILLISECONDS);
+            firstKeyLoad.thenRun(() -> timeout.cancel());
+            producerCreatedFuture.whenComplete((producer, error) -> timeout.cancel());
         }
         firstKeyLoad.thenRun(() -> {
             if (getState() == State.Ready) {
