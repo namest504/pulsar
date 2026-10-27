@@ -385,11 +385,6 @@ public class ProducerImplTest {
         };
     }
 
-    /**
-     * The key task runs apart from the connection. When the connection is ready before the first key load has
-     * finished, the creation must wait for it: it completes once the key is loaded and fails if the load does,
-     * with a crypto error or with any other exception the key reader throws.
-     */
     /** A producer that encrypts, whose key task is captured instead of run, connected through a mocked cnx. */
     private static final class ProducerWaitingForItsKey implements AutoCloseable {
         final PulsarClientImpl client = mockedPulsarClient();
@@ -436,6 +431,11 @@ public class ProducerImplTest {
         }
     }
 
+    /**
+     * The key task runs apart from the connection. When the connection is ready before the first key load has
+     * finished, the creation must wait for it: it completes once the key is loaded and fails if the load does,
+     * with a crypto error or with any other exception the key reader throws.
+     */
     @Test(dataProvider = "firstKeyLoad")
     public void testCreationWaitsForTheFirstKeyLoad(Exception keyLoadFailure) throws Exception {
         try (ProducerWaitingForItsKey waiting = new ProducerWaitingForItsKey(keyLoadFailure)) {
@@ -507,6 +507,25 @@ public class ProducerImplTest {
             assertTrue(waiting.created.isCompletedExceptionally(), "The creation must not stay pending");
             assertThatThrownBy(waiting.created::join)
                     .hasCauseInstanceOf(PulsarClientException.AlreadyClosedException.class);
+        }
+    }
+
+    /**
+     * An unrecoverable error from the broker closes the producer before its key has loaded; the creation must fail
+     * with that error, not with the close that follows it.
+     */
+    @Test
+    public void testCreationFailsWithTheUnrecoverableErrorBeforeTheFirstKeyLoad() throws Exception {
+        try (ProducerWaitingForItsKey waiting = new ProducerWaitingForItsKey(null)) {
+            when(waiting.cnx.sendRequestWithId(any(ByteBuf.class), anyLong())).thenReturn(FutureUtil.failedFuture(
+                    new PulsarClientException.TopicDoesNotExistException("The topic does not exist")));
+
+            waiting.producer.connectionOpened(waiting.cnx).get(10, TimeUnit.SECONDS);
+
+            assertTrue(waiting.created.isCompletedExceptionally(), "The creation must fail");
+            assertThatThrownBy(waiting.created::join)
+                    .hasCauseInstanceOf(PulsarClientException.TopicDoesNotExistException.class);
+            assertEquals(waiting.producer.getState(), HandlerState.State.Closed);
         }
     }
 

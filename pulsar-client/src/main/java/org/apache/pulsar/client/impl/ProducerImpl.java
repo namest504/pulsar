@@ -171,6 +171,9 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
     // completes only after it, so a producer whose key cannot be loaded fails its creation whether the connection
     // or the key load finishes first.
     private final CompletableFuture<Void> firstKeyLoad;
+    // Set, under the producer lock, once the producer has been ready with its creation left to the first key load.
+    // A close fails the creation from then on: nothing else would complete it anymore.
+    private boolean creationWaitsForTheKey = false;
 
     private final Map<String, String> metadata;
 
@@ -2466,9 +2469,10 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
         if (keyGeneratorTask != null && !keyGeneratorTask.isCancelled()) {
             keyGeneratorTask.cancel(false);
         }
-        if (firstKeyLoad != null) {
+        if (creationWaitsForTheKey) {
             // A creation still waiting for the key, or for the reconnection after it, must not stay pending. A
-            // creation that has already completed is not affected.
+            // creation that has already completed is not affected. Before the producer has been ready, the path
+            // that closes it fails the creation with its own cause.
             producerCreatedFuture.completeExceptionally(new PulsarClientException.AlreadyClosedException(
                     String.format("The producer %s of the topic %s was closed before it was created",
                             producerName, topic)));
@@ -2480,13 +2484,15 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
     /**
      * Completes the creation, after the first key load when the producer encrypts: the key is loaded by a task
      * that runs apart from the connection, and a producer whose key cannot be loaded must not be created even
-     * when the connection is ready first. The key task fails the creation itself in that case.
+     * when the connection is ready first. The key task fails the creation itself in that case. Called under the
+     * producer lock.
      */
     private void completeCreation() {
         if (firstKeyLoad == null) {
             producerCreatedFuture.complete(this);
             return;
         }
+        creationWaitsForTheKey = true;
         firstKeyLoad.thenRun(() -> {
             if (getState() == State.Ready) {
                 producerCreatedFuture.complete(this);
