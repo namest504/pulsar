@@ -2414,11 +2414,12 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
                 .attr("retry", t.getClass().getName())
                 .exceptionMessage(t)
                 .log("Closed producer because get an error that does not support to retry");
+        // Fail the creation with the error before closing, so that the close does not fail it first with its own.
+        producerCreatedFuture.completeExceptionally(t);
         closeAsync().whenComplete((v, ex) -> {
             if (ex != null) {
                 log.error().exception(ex).log("Failed to close producer on TopicDoesNotExistException.");
             }
-            producerCreatedFuture.completeExceptionally(t);
         });
     }
 
@@ -2467,8 +2468,9 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
             keyGeneratorTask.cancel(false);
         }
         if (firstKeyLoad != null) {
-            // A creation still waiting for the key, or for the reconnection after it, must not stay pending. A
-            // creation that has already completed is not affected.
+            // The creation of a producer that encrypts can wait for the key, or for a reconnection after it, and
+            // nothing else completes it once the producer has closed: fail it here, whatever stage it has reached.
+            // A creation that has already completed, or already failed with its own cause, is not affected.
             producerCreatedFuture.completeExceptionally(new PulsarClientException.AlreadyClosedException(
                     String.format("The producer %s of the topic %s was closed before it was created",
                             producerName, topic)));
