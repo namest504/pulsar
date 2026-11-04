@@ -32,8 +32,8 @@ dependencies {
     api(libs.slog)
     implementation(libs.caffeine)
     implementation(libs.simpleclient)
-    implementation(libs.simpleclient.caffeine)
     implementation(libs.prometheus.metrics.model)
+    implementation(libs.prometheus.metrics.instrumentation.caffeine)
 
     testImplementation(project(":buildtools"))
     testImplementation(project(":testmocks"))
