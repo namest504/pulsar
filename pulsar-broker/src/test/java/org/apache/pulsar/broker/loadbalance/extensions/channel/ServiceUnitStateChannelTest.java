@@ -709,7 +709,6 @@ public class ServiceUnitStateChannelTest extends MockedPulsarServiceBaseTest {
             }
             return invocationOnMock.callRealMethod();
         }).when(namespaceService).updateNamespaceBundles(any(), any());
-        doReturn(namespaceService).when(pulsar1).getNamespaceService();
         doReturn(CompletableFuture.completedFuture(List.of("test-topic-1", "test-topic-2")))
                 .when(namespaceService).getOwnedTopicListForNamespaceBundle(any());
 
@@ -1706,7 +1705,6 @@ public class ServiceUnitStateChannelTest extends MockedPulsarServiceBaseTest {
             }
             return invocationOnMock.callRealMethod();
         }).when(namespaceService).updateNamespaceBundles(any(), any());
-        doReturn(namespaceService).when(pulsar1).getNamespaceService();
         doReturn(CompletableFuture.completedFuture(List.of("test-topic-1", "test-topic-2")))
                 .when(namespaceService).getOwnedTopicListForNamespaceBundle(any());
 
