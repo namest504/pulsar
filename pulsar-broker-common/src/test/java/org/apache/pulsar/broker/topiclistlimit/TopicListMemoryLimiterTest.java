@@ -20,22 +20,31 @@ package org.apache.pulsar.broker.topiclistlimit;
 
 import static org.testng.Assert.assertEquals;
 import io.opentelemetry.api.OpenTelemetry;
-import io.prometheus.client.CollectorRegistry;
+import io.prometheus.metrics.model.registry.PrometheusRegistry;
+import io.prometheus.metrics.model.snapshots.MetricSnapshot;
+import io.prometheus.metrics.model.snapshots.SummarySnapshot;
 import org.testng.annotations.Test;
 
 public class TopicListMemoryLimiterTest {
 
     @Test
     public void testWaitTimeIsRecordedWithSubMillisecondPrecision() {
-        CollectorRegistry registry = new CollectorRegistry();
+        PrometheusRegistry registry = new PrometheusRegistry();
         try (TopicListMemoryLimiter limiter = new TopicListMemoryLimiter(registry, "test_",
                 OpenTelemetry.noop().getMeter("test"), 1024, 10, 1000, 1024, 10, 1000)) {
             limiter.recordHeapWaitTime(1_500_000);
             limiter.recordDirectWaitTime(250_000);
 
             // truncating to whole milliseconds would record 0 ms for nearly every request, see recordHeapWaitTime
-            assertEquals(registry.getSampleValue("test_topic_list_heap_wait_time_ms_sum"), 1.5);
-            assertEquals(registry.getSampleValue("test_topic_list_direct_wait_time_ms_sum"), 0.25);
+            assertEquals(summarySum(registry, "test_topic_list_heap_wait_time_ms"), 1.5);
+            assertEquals(summarySum(registry, "test_topic_list_direct_wait_time_ms"), 0.25);
         }
+    }
+
+    private static double summarySum(PrometheusRegistry registry, String name) {
+        for (MetricSnapshot snapshot : registry.scrape(name::equals)) {
+            return ((SummarySnapshot) snapshot).getDataPoints().get(0).getSum();
+        }
+        throw new AssertionError("No summary " + name);
     }
 }
