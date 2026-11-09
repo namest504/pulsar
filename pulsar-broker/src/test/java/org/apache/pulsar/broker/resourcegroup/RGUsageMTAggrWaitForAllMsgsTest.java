@@ -19,7 +19,8 @@
 package org.apache.pulsar.broker.resourcegroup;
 
 import com.google.common.collect.Sets;
-import io.prometheus.client.Summary;
+import io.prometheus.metrics.model.snapshots.Quantile;
+import io.prometheus.metrics.model.snapshots.SummarySnapshot;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Map;
@@ -44,6 +45,7 @@ import org.apache.pulsar.common.policies.data.TenantInfo;
 import org.apache.pulsar.common.policies.data.TenantInfoImpl;
 import org.apache.pulsar.common.policies.data.TopicStats;
 import org.apache.pulsar.common.policies.data.stats.TopicStatsImpl;
+import org.awaitility.Awaitility;
 import org.testng.Assert;
 import org.testng.annotations.Test;
 
@@ -750,22 +752,28 @@ public class RGUsageMTAggrWaitForAllMsgsTest extends SharedPulsarBaseTest {
 
         Assert.assertEquals(totalUpdates, 0);  // currently, we don't update the RGs in this UT
 
-        // Basic check that latency metrics are doing some work.
-        Summary.Child.Value usageAggrLatency = ResourceGroupService.getRgUsageAggregationLatency();
-        Assert.assertNotEquals(usageAggrLatency.count, 0);
-        Assert.assertNotEquals(usageAggrLatency.sum, 0);
-        double fiftiethPercentileValue = usageAggrLatency.quantiles.get(0.5);
-        Assert.assertNotEquals(fiftiethPercentileValue, 0);
-        double ninthPercentileValue = usageAggrLatency.quantiles.get(0.9);
-        Assert.assertNotEquals(ninthPercentileValue, 0);
+        // Basic check that latency metrics are doing some work. Both summaries are fed by periodic tasks that run
+        // every PUBLISH_INTERVAL_SECS, so give them time to complete at least once.
+        Awaitility.await().atMost(3 * PUBLISH_INTERVAL_SECS, TimeUnit.SECONDS).untilAsserted(() -> {
+            assertLatencyRecorded(ResourceGroupService.getRgUsageAggregationLatency());
+            assertLatencyRecorded(ResourceGroupService.getRgQuotaCalculationTime());
+        });
+    }
 
-        Summary.Child.Value quotaCalcLatency = ResourceGroupService.getRgQuotaCalculationTime();
-        Assert.assertNotEquals(quotaCalcLatency.count, 0);
-        Assert.assertNotEquals(quotaCalcLatency.sum, 0);
-        fiftiethPercentileValue = quotaCalcLatency.quantiles.get(0.5);
-        Assert.assertNotEquals(fiftiethPercentileValue, 0);
-        ninthPercentileValue = quotaCalcLatency.quantiles.get(0.9);
-        Assert.assertNotEquals(ninthPercentileValue, 0);
+    private static void assertLatencyRecorded(SummarySnapshot.SummaryDataPointSnapshot latency) {
+        Assert.assertTrue(latency.getCount() > 0);
+        Assert.assertTrue(latency.getSum() > 0);
+        Assert.assertTrue(quantileValue(latency, 0.5) > 0);
+        Assert.assertTrue(quantileValue(latency, 0.9) > 0);
+    }
+
+    private static double quantileValue(SummarySnapshot.SummaryDataPointSnapshot summary, double quantile) {
+        for (Quantile q : summary.getQuantiles()) {
+            if (q.getQuantile() == quantile) {
+                return q.getValue();
+            }
+        }
+        throw new AssertionError("Quantile " + quantile + " is not exposed");
     }
 
     // Empirically, there appears to be a 31-byte overhead for metadata, imposed by Pulsar runtime.
