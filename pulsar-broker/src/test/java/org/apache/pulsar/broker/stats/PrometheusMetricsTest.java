@@ -21,7 +21,7 @@ package org.apache.pulsar.broker.stats;
 import static com.google.common.base.Preconditions.checkArgument;
 import static org.apache.pulsar.broker.stats.prometheus.PrometheusMetricsClient.Metric;
 import static org.apache.pulsar.broker.stats.prometheus.PrometheusMetricsClient.parseMetrics;
-import static org.assertj.core.api.AssertionsForClassTypes.assertThat;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 import static org.testng.Assert.assertEquals;
@@ -38,6 +38,7 @@ import io.prometheus.client.Collector;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
@@ -116,9 +117,22 @@ import org.testng.annotations.Test;
 @CustomLog
 @Test(groups = "broker")
 public class PrometheusMetricsTest extends BrokerTestBase {
-    @SuppressWarnings("deprecation")
+    // These methods start the broker themselves, with a configuration of their own.
+    private static final Set<String> METHODS_STARTING_OWN_BROKER = Set.of(
+            "testPublishRateLimitedTimes",
+            "testBrokerMetrics",
+            "testStorageReadCacheMissesRate",
+            "testBundlesMetricsWithExtensibleLoadManager",
+            "testDuplicateMetricTypeDefinitions");
 
     @BeforeMethod(alwaysRun = true)
+    public void startBroker(Method method) throws Exception {
+        if (!METHODS_STARTING_OWN_BROKER.contains(method.getName())) {
+            setup();
+        }
+    }
+
+    @SuppressWarnings("deprecation")
     @Override
     protected void setup() throws Exception {
         super.baseSetup();
@@ -175,7 +189,6 @@ public class PrometheusMetricsTest extends BrokerTestBase {
 
     @Test
     public void testPublishRateLimitedTimes() throws Exception {
-        cleanup();
         conf.setMaxPublishRatePerTopicInMessages(1);
         conf.setMaxPublishRatePerTopicInBytes(1);
         conf.setBrokerPublisherThrottlingMaxMessageRate(100000);
@@ -260,7 +273,6 @@ public class PrometheusMetricsTest extends BrokerTestBase {
 
     @Test
     public void testBrokerMetrics() throws Exception {
-        cleanup();
         conf.setAdditionalSystemCursorNames(Set.of("test-cursor"));
         conf.setTopicLevelPoliciesEnabled(true);
         conf.setSystemTopicEnabled(true);
@@ -719,7 +731,6 @@ public class PrometheusMetricsTest extends BrokerTestBase {
 
     @Test(dataProvider = "cacheEnable")
     public void testStorageReadCacheMissesRate(boolean cacheEnable) throws Exception {
-        cleanup();
         conf.setManagedLedgerStatsPeriodSeconds(Integer.MAX_VALUE);
         conf.setManagedLedgerCacheEvictionTimeThresholdMillis(Long.MAX_VALUE);
         conf.setCacheEvictionByMarkDeletedPosition(true);
@@ -1011,7 +1022,6 @@ public class PrometheusMetricsTest extends BrokerTestBase {
 
     @Test
     public void testBundlesMetricsWithExtensibleLoadManager() throws Exception {
-        cleanup();
         conf.setLoadManagerClassName(ExtensibleLoadManagerImpl.class.getName());
         conf.setExposeBundlesMetricsInPrometheus(true);
         setup();
@@ -1360,7 +1370,6 @@ public class PrometheusMetricsTest extends BrokerTestBase {
     // Running the test twice to make sure types are present when generated multiple times
     @Test(invocationCount = 2)
     public void testDuplicateMetricTypeDefinitions() throws Exception {
-        cleanup();
         conf.setTransactionCoordinatorEnabled(true);
         conf.setTransactionLogBatchedWriteEnabled(true);
         conf.setTransactionPendingAckBatchedWriteEnabled(true);
@@ -1974,6 +1983,45 @@ public class PrometheusMetricsTest extends BrokerTestBase {
         assertEquals(cm.get(0).tags.get("cluster"), "test");
         assertEquals(cm.get(0).tags.get("broker"), "localhost");
         assertEquals(cm.get(0).value, count);
+    }
+
+    @Test
+    public void testCaffeineCacheMetricsAreScraped() throws Exception {
+        // The cache collector lives in the Prometheus Java client 1.x registry; the broker scrape must still
+        // expose it under the legacy names, with the cluster label, for every cache the broker registers.
+        ByteArrayOutputStream statsOut = new ByteArrayOutputStream();
+        PrometheusMetricsTestUtil.generate(pulsar, false, false, false, statsOut);
+        String metricsStr = statsOut.toString();
+        // The 1.x writer names counters with _total; the simpleclient writer emitted "caffeine_cache_hit counter".
+        assertThat(metricsStr).contains("# TYPE caffeine_cache_hit_total counter\n")
+                .doesNotContain("# TYPE caffeine_cache_hit counter\n")
+                .contains("# TYPE caffeine_cache_eviction_weight gauge\n")
+                .doesNotContain("caffeine_cache_eviction_weight_total")
+                .doesNotContain("caffeine_cache_weighted_size")
+                .contains("# TYPE caffeine_cache_load_duration_seconds summary\n");
+        for (String type : List.of("caffeine_cache_hit_total counter", "caffeine_cache_miss_total counter",
+                "caffeine_cache_requests_total counter", "caffeine_cache_eviction_total counter",
+                "caffeine_cache_eviction_weight gauge", "caffeine_cache_estimated_size gauge",
+                "caffeine_cache_loads_total counter", "caffeine_cache_load_failure_total counter",
+                "caffeine_cache_load_duration_seconds summary")) {
+            assertEquals(StringUtils.countMatches(metricsStr, "# TYPE " + type + "\n"), 1, type);
+        }
+        Multimap<String, Metric> metrics = parseMetrics(metricsStr);
+        for (String family : List.of("caffeine_cache_hit_total", "caffeine_cache_miss_total",
+                "caffeine_cache_requests_total", "caffeine_cache_eviction_total",
+                "caffeine_cache_eviction_weight", "caffeine_cache_estimated_size",
+                "caffeine_cache_loads_total", "caffeine_cache_load_failure_total",
+                "caffeine_cache_load_duration_seconds_count")) {
+            Collection<Metric> samples = metrics.get(family);
+            assertThat(samples).as(family).extracting(m -> m.tags.get("cache")).contains("bundles", "owned-bundles");
+            assertThat(samples).as(family).allSatisfy(m -> assertEquals(m.tags.get("cluster"), "test"));
+        }
+        // The loading caches have been exercised by broker start-up, so their load statistics are non-zero.
+        for (String family : List.of("caffeine_cache_requests_total", "caffeine_cache_loads_total",
+                "caffeine_cache_load_duration_seconds_count")) {
+            assertThat(metrics.get(family)).as(family).filteredOn(m -> "bundles".equals(m.tags.get("cache")))
+                    .isNotEmpty().allSatisfy(m -> assertThat(m.value).as(family).isGreaterThan(0));
+        }
     }
 
     @Test

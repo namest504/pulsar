@@ -43,8 +43,8 @@ dependencies {
     implementation(libs.typetools)
     api(libs.simpleclient)
     implementation(libs.simpleclient.hotspot)
-    implementation(libs.simpleclient.caffeine)
     implementation(libs.simpleclient.httpserver)
+    implementation(libs.prometheus.metrics.instrumentation.caffeine)
     implementation(libs.prometheus.jmx.collector)
     implementation(libs.datasketches.java)
     implementation(libs.jackson.databind)
@@ -74,6 +74,6 @@ dependencies {
     testCompileOnly(libs.swagger.annotations)
 }
 
-tasks.withType<Test> {
+tasks.withType<Test>().configureEach {
     environment("TEST_JAVA_INSTANCE_PARSE_ENV_VAR", "some-configuration")
 }
