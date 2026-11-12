@@ -38,6 +38,7 @@ import io.prometheus.client.Collector;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
@@ -116,9 +117,22 @@ import org.testng.annotations.Test;
 @CustomLog
 @Test(groups = "broker")
 public class PrometheusMetricsTest extends BrokerTestBase {
-    @SuppressWarnings("deprecation")
+    // These methods start the broker themselves, with a configuration of their own.
+    private static final Set<String> METHODS_STARTING_OWN_BROKER = Set.of(
+            "testPublishRateLimitedTimes",
+            "testBrokerMetrics",
+            "testStorageReadCacheMissesRate",
+            "testBundlesMetricsWithExtensibleLoadManager",
+            "testDuplicateMetricTypeDefinitions");
 
     @BeforeMethod(alwaysRun = true)
+    public void startBroker(Method method) throws Exception {
+        if (!METHODS_STARTING_OWN_BROKER.contains(method.getName())) {
+            setup();
+        }
+    }
+
+    @SuppressWarnings("deprecation")
     @Override
     protected void setup() throws Exception {
         super.baseSetup();
@@ -175,7 +189,6 @@ public class PrometheusMetricsTest extends BrokerTestBase {
 
     @Test
     public void testPublishRateLimitedTimes() throws Exception {
-        cleanup();
         conf.setMaxPublishRatePerTopicInMessages(1);
         conf.setMaxPublishRatePerTopicInBytes(1);
         conf.setBrokerPublisherThrottlingMaxMessageRate(100000);
@@ -260,7 +273,6 @@ public class PrometheusMetricsTest extends BrokerTestBase {
 
     @Test
     public void testBrokerMetrics() throws Exception {
-        cleanup();
         conf.setAdditionalSystemCursorNames(Set.of("test-cursor"));
         conf.setTopicLevelPoliciesEnabled(true);
         conf.setSystemTopicEnabled(true);
@@ -719,7 +731,6 @@ public class PrometheusMetricsTest extends BrokerTestBase {
 
     @Test(dataProvider = "cacheEnable")
     public void testStorageReadCacheMissesRate(boolean cacheEnable) throws Exception {
-        cleanup();
         conf.setManagedLedgerStatsPeriodSeconds(Integer.MAX_VALUE);
         conf.setManagedLedgerCacheEvictionTimeThresholdMillis(Long.MAX_VALUE);
         conf.setCacheEvictionByMarkDeletedPosition(true);
@@ -1011,7 +1022,6 @@ public class PrometheusMetricsTest extends BrokerTestBase {
 
     @Test
     public void testBundlesMetricsWithExtensibleLoadManager() throws Exception {
-        cleanup();
         conf.setLoadManagerClassName(ExtensibleLoadManagerImpl.class.getName());
         conf.setExposeBundlesMetricsInPrometheus(true);
         setup();
@@ -1340,6 +1350,33 @@ public class PrometheusMetricsTest extends BrokerTestBase {
         c2.close();
     }
 
+    @Test
+    public void testBrokerCommonMetricsAreScraped() throws Exception {
+        // The Jetty statistics and the topic list limiter live in the Prometheus Java client 1.x registry; the
+        // broker scrape must still expose them under the legacy names with the cluster label. Jetty counters are
+        // emitted at zero, so they are present without any HTTP traffic.
+        ByteArrayOutputStream statsOut = new ByteArrayOutputStream();
+        PrometheusMetricsTestUtil.generate(pulsar, false, false, false, statsOut);
+        String metricsStr = statsOut.toString();
+        assertThat(metricsStr).contains("# TYPE jetty_requests_total counter\n")
+                .contains("# TYPE jetty_requests_active gauge\n")
+                .contains("# TYPE pulsar_broker_topic_list_heap_wait_time_ms summary\n");
+        Multimap<String, Metric> metrics = parseMetrics(metricsStr);
+        for (String family : List.of("jetty_requests_total", "jetty_responses_bytes_total", "jetty_stats_seconds",
+                "pulsar_broker_topic_list_heap_memory_limit_bytes", "pulsar_broker_topic_list_direct_queue_size",
+                "pulsar_broker_topic_list_heap_timeout_total")) {
+            Collection<Metric> samples = metrics.get(family);
+            assertEquals(samples.size(), 1, family);
+            assertEquals(samples.iterator().next().tags.get("cluster"), "test", family);
+        }
+        Set<String> codes = new HashSet<>();
+        for (Metric m : metrics.get("jetty_responses_total")) {
+            assertEquals(m.tags.get("cluster"), "test");
+            codes.add(m.tags.get("code"));
+        }
+        assertEquals(codes, Set.of("1xx", "2xx", "3xx", "4xx", "5xx"));
+    }
+
     /** Checks for duplicate type definitions for a metric in the Prometheus metrics output. If the Prometheus parser
      finds a TYPE definition for the same metric more than once, it errors out:
      https://github.com/prometheus/prometheus/blob/f04b1b5559a80a4fd1745cf891ce392a056460c9/vendor/github.com/
@@ -1360,7 +1397,6 @@ public class PrometheusMetricsTest extends BrokerTestBase {
     // Running the test twice to make sure types are present when generated multiple times
     @Test(invocationCount = 2)
     public void testDuplicateMetricTypeDefinitions() throws Exception {
-        cleanup();
         conf.setTransactionCoordinatorEnabled(true);
         conf.setTransactionLogBatchedWriteEnabled(true);
         conf.setTransactionPendingAckBatchedWriteEnabled(true);
