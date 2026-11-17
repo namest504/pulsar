@@ -34,7 +34,6 @@ import com.google.common.base.Splitter;
 import com.google.common.collect.Multimap;
 import com.google.common.collect.Sets;
 import io.jsonwebtoken.SignatureAlgorithm;
-import io.prometheus.client.Collector;
 import io.prometheus.metrics.model.registry.PrometheusRegistry;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -1850,21 +1849,8 @@ public class PrometheusMetricsTest extends BrokerTestBase {
                 .collect(Collectors.toSet());
     }
 
-    /***
-     * this method will return ["_sum", "_info", "_bucket", "_count", "_total", "_created", "_gsum", "_gcount"].
-     */
     public static Set<String> allPrometheusSuffixEnums(){
-        HashSet<String> result = new HashSet<>();
-        final String metricsName = "123";
-        for (Collector.Type type : Collector.Type.values()){
-            Collector.MetricFamilySamples metricFamilySamples =
-                    new Collector.MetricFamilySamples(metricsName, type, "", new ArrayList<>());
-            result.addAll(Arrays.asList(metricFamilySamples.getNames()));
-        }
-        return result.stream()
-                .map(str -> str.substring(metricsName.length()))
-                .filter(str -> StringUtils.isNotBlank(str))
-                .collect(Collectors.toSet());
+        return Set.of("_total", "_created", "_count", "_sum", "_bucket", "_gcount", "_gsum", "_info");
     }
 
     @Test

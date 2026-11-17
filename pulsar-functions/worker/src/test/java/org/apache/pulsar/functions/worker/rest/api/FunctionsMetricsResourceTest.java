@@ -24,8 +24,6 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 import static org.testng.Assert.assertFalse;
 import static org.testng.Assert.assertTrue;
-import io.prometheus.client.CollectorRegistry;
-import io.prometheus.client.Gauge;
 import io.prometheus.metrics.model.registry.Collector;
 import io.prometheus.metrics.model.registry.PrometheusRegistry;
 import io.prometheus.metrics.model.snapshots.GaugeSnapshot;
@@ -41,57 +39,45 @@ import org.testng.annotations.AfterMethod;
 import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.Test;
 
-/**
- * The standalone worker /metrics must expose both Prometheus Java client registries when standard metrics are
- * enabled, because shared collectors such as the Caffeine cache metrics register on the 1.x registry.
- */
 public class FunctionsMetricsResourceTest {
 
-    private static final String LEGACY_NAME = "functions_metrics_resource_test_legacy";
-    private static final String MODERN_NAME = "functions_metrics_resource_test_modern";
+    private static final String GAUGE_NAME = "functions_metrics_resource_test_gauge";
     private static final String FUNCTIONS_MARKER = "functions_metrics_resource_test_marker 1.0\n";
 
-    private Gauge legacyGauge;
-    private Collector modernCollector;
+    private Collector gauge;
 
     @BeforeMethod
     public void setup() {
-        legacyGauge = Gauge.build(LEGACY_NAME, "legacy registry gauge").register(CollectorRegistry.defaultRegistry);
-        legacyGauge.set(1);
-        modernCollector = new Collector() {
+        gauge = new Collector() {
             @Override
             public MetricSnapshot collect() {
                 return GaugeSnapshot.builder()
-                        .name(MODERN_NAME)
-                        .help("1.x registry gauge")
+                        .name(GAUGE_NAME)
+                        .help("default registry gauge")
                         .dataPoint(GaugeSnapshot.GaugeDataPointSnapshot.builder().value(1).build())
                         .build();
             }
         };
-        PrometheusRegistry.defaultRegistry.register(modernCollector);
+        PrometheusRegistry.defaultRegistry.register(gauge);
     }
 
     @AfterMethod(alwaysRun = true)
     public void cleanup() {
-        CollectorRegistry.defaultRegistry.unregister(legacyGauge);
-        PrometheusRegistry.defaultRegistry.unregister(modernCollector);
+        PrometheusRegistry.defaultRegistry.unregister(gauge);
     }
 
     @Test
-    public void testStandardMetricsEnabledExportsBothRegistries() throws Exception {
+    public void testStandardMetricsEnabledExportsTheDefaultRegistry() throws Exception {
         String body = scrape(true);
-        assertTrue(body.contains("# TYPE " + LEGACY_NAME + " gauge\n"), body);
-        assertTrue(body.contains(LEGACY_NAME + " 1.0\n"), body);
-        assertTrue(body.contains("# TYPE " + MODERN_NAME + " gauge\n"), body);
-        assertTrue(body.contains(MODERN_NAME + " 1.0\n"), body);
+        assertTrue(body.contains("# TYPE " + GAUGE_NAME + " gauge\n"), body);
+        assertTrue(body.contains(GAUGE_NAME + " 1.0\n"), body);
         assertTrue(body.contains(FUNCTIONS_MARKER), body);
     }
 
     @Test
     public void testStandardMetricsDisabledExportsOnlyFunctionsStats() throws Exception {
         String body = scrape(false);
-        assertFalse(body.contains(LEGACY_NAME), body);
-        assertFalse(body.contains(MODERN_NAME), body);
+        assertFalse(body.contains(GAUGE_NAME), body);
         assertTrue(body.contains(FUNCTIONS_MARKER), body);
     }
 

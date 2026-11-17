@@ -19,7 +19,6 @@
 package org.apache.pulsar.broker.stats.prometheus;
 
 import static org.apache.pulsar.broker.stats.prometheus.PrometheusMetricsGeneratorUtils.generateSystemMetrics;
-import static org.apache.pulsar.broker.stats.prometheus.PrometheusMetricsGeneratorUtils.getTypeStr;
 import com.google.common.annotations.VisibleForTesting;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
@@ -27,7 +26,6 @@ import io.netty.buffer.CompositeByteBuf;
 import io.netty.buffer.PooledByteBufAllocator;
 import io.netty.buffer.Unpooled;
 import io.netty.util.internal.PlatformDependent;
-import io.prometheus.client.Collector;
 import java.io.BufferedOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
@@ -420,8 +418,7 @@ public class PrometheusMetricsGenerator implements AutoCloseable {
     private static void generateBrokerBasicMetrics(PulsarService pulsar, SimpleTextOutputStream stream) {
         String clusterName = pulsar.getConfiguration().getClusterName();
         // generate managedLedgerCache metrics
-        parseMetricsToPrometheusMetrics(new ManagedLedgerCacheMetrics(pulsar).generate(),
-                clusterName, Collector.Type.GAUGE, stream);
+        parseMetricsToPrometheusMetrics(new ManagedLedgerCacheMetrics(pulsar).generate(), clusterName, stream);
 
         if (pulsar.getConfiguration().isExposeManagedLedgerMetricsInPrometheus()) {
             // generate managedLedger metrics
@@ -434,17 +431,15 @@ public class PrometheusMetricsGenerator implements AutoCloseable {
         }
 
         parseMetricsToPrometheusMetrics(pulsar.getBrokerService()
-                        .getPulsarStats().getBrokerOperabilityMetrics().getMetrics(),
-                clusterName, Collector.Type.GAUGE, stream);
+                        .getPulsarStats().getBrokerOperabilityMetrics().getMetrics(), clusterName, stream);
 
         // generate loadBalance metrics
-        parseMetricsToPrometheusMetrics(pulsar.getLoadManager().get().getLoadBalancingMetrics(),
-                clusterName, Collector.Type.GAUGE, stream);
+        parseMetricsToPrometheusMetrics(pulsar.getLoadManager().get().getLoadBalancingMetrics(), clusterName, stream);
     }
 
     @VisibleForTesting
     static void parseMetricsToPrometheusMetrics(Collection<Metrics> metrics, String cluster,
-                                                        Collector.Type metricType, SimpleTextOutputStream stream) {
+                                                        SimpleTextOutputStream stream) {
         Set<String> names = new HashSet<>();
         for (Metrics metrics1 : metrics) {
             for (Map.Entry<String, Object> entry : metrics1.getMetrics().entrySet()) {
@@ -463,7 +458,7 @@ public class PrometheusMetricsGenerator implements AutoCloseable {
                         if (!names.contains(name)) {
                             stream.write("# TYPE ");
                             writeNameReplacingBrkPrefix(stream, name);
-                            stream.write(' ').write(getTypeStr(metricType)).write("\n");
+                            stream.write(" gauge\n");
                             names.add(name);
                         }
                         writeNameReplacingBrkPrefix(stream, name);
@@ -477,7 +472,7 @@ public class PrometheusMetricsGenerator implements AutoCloseable {
                     if (!names.contains(name)) {
                         stream.write("# TYPE ");
                         writeNameReplacingBrkPrefix(stream, entry.getKey());
-                        stream.write(' ').write(getTypeStr(metricType)).write('\n');
+                        stream.write(" gauge\n");
                         names.add(name);
                     }
                     writeNameReplacingBrkPrefix(stream, name);

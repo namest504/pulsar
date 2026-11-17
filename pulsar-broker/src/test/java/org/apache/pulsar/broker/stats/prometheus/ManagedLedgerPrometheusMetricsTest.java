@@ -24,7 +24,6 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
-import io.prometheus.client.Collector;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -601,8 +600,7 @@ public class ManagedLedgerPrometheusMetricsTest {
     }
 
     private static String legacy(Collection<Metrics> metrics) {
-        return render(stream -> PrometheusMetricsGenerator.parseMetricsToPrometheusMetrics(
-                metrics, CLUSTER, Collector.Type.GAUGE, stream));
+        return render(stream -> PrometheusMetricsGenerator.parseMetricsToPrometheusMetrics(metrics, CLUSTER, stream));
     }
 
     private static String render(Consumer<SimpleTextOutputStream> generator) {

@@ -20,7 +20,6 @@ package org.apache.pulsar.broker.stats.prometheus;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
-import io.prometheus.client.Collector;
 import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -157,10 +156,10 @@ public class ManagedLedgerMetricsBenchmark {
         buffer.clear();
         SimpleTextOutputStream stream = new SimpleTextOutputStream(buffer);
         PrometheusMetricsGenerator.parseMetricsToPrometheusMetrics(new ManagedLedgerMetrics(pulsar).generate(),
-                CLUSTER, Collector.Type.GAUGE, stream);
+                CLUSTER, stream);
         if (cursorsPerLedger > 0) {
             PrometheusMetricsGenerator.parseMetricsToPrometheusMetrics(new ManagedCursorMetrics(pulsar).generate(),
-                    CLUSTER, Collector.Type.GAUGE, stream);
+                    CLUSTER, stream);
         }
         return buffer.writerIndex();
     }

@@ -25,9 +25,8 @@ import com.google.common.base.MoreObjects;
 import com.google.common.base.Splitter;
 import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.Multimap;
-import io.prometheus.client.Collector;
-import io.prometheus.client.CollectorRegistry;
-import io.prometheus.client.Counter;
+import io.prometheus.metrics.core.metrics.Counter;
+import io.prometheus.metrics.model.registry.PrometheusRegistry;
 import jakarta.ws.rs.client.Client;
 import jakarta.ws.rs.client.ClientBuilder;
 import jakarta.ws.rs.core.Response;
@@ -128,8 +127,7 @@ public class ProxyPrometheusMetricsTest extends MockedPulsarServiceBaseTest {
      */
     @Test
     public void testMetrics() {
-        Counter counter = Counter.build("test_counter", "a test counter").create();
-        Collector collector = counter.register();
+        Counter counter = Counter.builder().name("test_counter").help("a test counter").register();
         try {
             Awaitility.await().pollInterval(Duration.ofSeconds(1)).untilAsserted(() -> {
                 Multimap<String, Metric> metrics = getMetrics();
@@ -139,18 +137,18 @@ public class ProxyPrometheusMetricsTest extends MockedPulsarServiceBaseTest {
                 assertEquals(cm.size(), 1);
                 assertEquals(cm.get(0).tags.get("cluster"), TEST_CLUSTER);
 
-                // Check that any Prometheus metric registered in the default CollectorRegistry is present
+                // Check that PrometheusRawMetricsProvider metrics are present
                 List<Metric> cm2 = (List<Metric>) metrics.get("test_metrics");
                 assertEquals(cm2.size(), 1);
                 assertEquals(cm2.get(0).tags.get("label1"), "xyz");
 
-                // Check that PrometheusRawMetricsProvider metrics are present
+                // Check that any Prometheus metric registered in the default PrometheusRegistry is present
                 List<Metric> cm3 = (List<Metric>) metrics.get("test_counter_total");
                 assertEquals(cm3.size(), 1);
                 assertEquals(cm3.get(0).tags.get("cluster"), TEST_CLUSTER);
             });
         } finally {
-            CollectorRegistry.defaultRegistry.unregister(collector);
+            PrometheusRegistry.defaultRegistry.unregister(counter);
         }
     }
 
