@@ -46,8 +46,6 @@ dependencies {
     // Optional in the client POMs; javac needs it to subclass the @StableApi PrometheusRegistry
     compileOnly(libs.prometheus.metrics.annotations)
     implementation(libs.prometheus.metrics.exposition.textformats)
-    // Only for stats.PrometheusTextFormat, which the functions worker still uses for its own simpleclient registry
-    implementation(libs.simpleclient)
     implementation(libs.prometheus.metrics.instrumentation.caffeine)
     implementation(libs.datasketches.java)
     implementation(libs.jackson.databind)
