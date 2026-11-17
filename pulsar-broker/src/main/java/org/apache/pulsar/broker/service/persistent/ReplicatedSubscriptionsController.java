@@ -147,12 +147,13 @@ public class ReplicatedSubscriptionsController implements AutoCloseable, Topic.P
             .register();
 
     // timeouts use SnapshotOperationResult.TIMEOUT.attributes on the same metric
+    // Nothing exports exemplars, so the counter skips the sampling that 1.x counters do by default.
     @PulsarDeprecatedMetric(
             newMetricName = OpenTelemetryReplicatedSubscriptionStats.SNAPSHOT_OPERATION_COUNT_METRIC_NAME)
     @Deprecated
     private static final Counter timedoutSnapshotsMetric = Counter.builder()
             .name("pulsar_replicated_subscriptions_timedout_snapshots")
-            .help("Counter of timed out snapshots").register();
+            .help("Counter of timed out snapshots").withoutExemplars().register();
 
     private final OpenTelemetryReplicatedSubscriptionStats stats;
 
