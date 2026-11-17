@@ -197,9 +197,11 @@ public class TopicListMemoryLimiter extends AsyncDualMemoryLimiterImpl {
                 .setDescription("Wait time for direct memory permits")
                 .build();
 
+        // Nothing exports exemplars, so the summaries and counters skip the sampling that 1.x metrics do by default.
         this.heapTimeoutTotal = register(Counter.builder()
                 .name(prometheusPrefix + "topic_list_heap_timeout")
                 .help("Total heap memory permit timeouts")
+                .withoutExemplars()
                 .build());
         this.otelHeapTimeoutTotal = openTelemetryMeter.counterBuilder("topic.list.heap.timeout.total")
                 .setDescription("Total heap memory permit timeouts")
@@ -209,6 +211,7 @@ public class TopicListMemoryLimiter extends AsyncDualMemoryLimiterImpl {
         this.directTimeoutTotal = register(Counter.builder()
                 .name(prometheusPrefix + "topic_list_direct_timeout")
                 .help("Total direct memory permit timeouts")
+                .withoutExemplars()
                 .build());
         this.otelDirectTimeoutTotal = openTelemetryMeter.counterBuilder("topic.list.direct.timeout.total")
                 .setDescription("Total direct memory permit timeouts")
@@ -225,6 +228,7 @@ public class TopicListMemoryLimiter extends AsyncDualMemoryLimiterImpl {
                 .quantile(0.99, 0.01)
                 .quantile(1, 0.01)
                 .maxAgeSeconds(QUANTILE_WINDOW_SECONDS)
+                .withoutExemplars()
                 .build();
     }
 
