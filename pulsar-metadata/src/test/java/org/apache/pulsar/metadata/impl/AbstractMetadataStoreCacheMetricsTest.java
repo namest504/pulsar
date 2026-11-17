@@ -19,20 +19,30 @@
 package org.apache.pulsar.metadata.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import com.fasterxml.jackson.core.type.TypeReference;
 import io.prometheus.metrics.model.registry.PrometheusRegistry;
 import io.prometheus.metrics.model.snapshots.DataPointSnapshot;
 import io.prometheus.metrics.model.snapshots.MetricSnapshot;
+import java.nio.charset.StandardCharsets;
 import java.util.HashSet;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import org.apache.pulsar.common.stats.CacheMetricsCollector;
+import org.apache.pulsar.metadata.api.MetadataCache;
 import org.apache.pulsar.metadata.api.MetadataStoreConfig;
+import org.apache.pulsar.metadata.cache.impl.JSONMetadataSerdeTypeRef;
 import org.testng.annotations.AfterMethod;
 import org.testng.annotations.BeforeMethod;
+import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
 
 @Test(groups = "metadata")
 public class AbstractMetadataStoreCacheMetricsTest {
+    private static final String NAMED_CACHE_SUFFIX = "-named";
+
     private String storeName;
     private String childrenCacheName;
     private String existsCacheName;
@@ -51,6 +61,26 @@ public class AbstractMetadataStoreCacheMetricsTest {
         CacheMetricsCollector.CAFFEINE.removeCache(childrenCacheName);
         CacheMetricsCollector.CAFFEINE.removeCache(existsCacheName);
         CacheMetricsCollector.CAFFEINE.removeCache(metadataCacheName);
+        CacheMetricsCollector.CAFFEINE.removeCache(storeName + NAMED_CACHE_SUFFIX);
+    }
+
+    private interface MetadataCacheFactory {
+        MetadataCache<String> create(LocalMemoryMetadataStore store, String cacheName);
+    }
+
+    @DataProvider
+    public Object[][] metadataCacheOverloads() {
+        MetadataCacheFactory byClass = (store, cacheName) -> store.getMetadataCache(String.class);
+        MetadataCacheFactory byTypeReference =
+                (store, cacheName) -> store.getMetadataCache(new TypeReference<String>() {});
+        MetadataCacheFactory byNamedSerde = (store, cacheName) -> store.getMetadataCache(cacheName,
+                new JSONMetadataSerdeTypeRef<>(new TypeReference<String>() {}),
+                store.getDefaultMetadataCacheConfig());
+        return new Object[][] {
+                {"Class", "", byClass},
+                {"TypeReference", "", byTypeReference},
+                {"named MetadataSerde", NAMED_CACHE_SUFFIX, byNamedSerde},
+        };
     }
 
     @Test
@@ -87,19 +117,48 @@ public class AbstractMetadataStoreCacheMetricsTest {
                 .doesNotContain(childrenCacheName, existsCacheName);
     }
 
-    @Test
-    public void testCloseRemovesMetadataCacheMetrics() throws Exception {
+    @Test(dataProvider = "metadataCacheOverloads")
+    public void testCloseRemovesMetadataCacheMetrics(String overload, String cacheNameSuffix,
+                                                     MetadataCacheFactory factory) throws Exception {
+        String cacheName = storeName + cacheNameSuffix;
         LocalMemoryMetadataStore store = newStoreNamed(storeName);
         try {
-            store.getMetadataCache(String.class);
+            factory.create(store, cacheName);
             assertThat(exposedCacheNames()).as("metadata cache series exposed while the store is open")
-                    .contains(metadataCacheName);
+                    .contains(cacheName);
         } finally {
             store.close();
         }
 
         assertThat(exposedCacheNames()).as("metadata cache series exposed after the store is closed")
-                .doesNotContain(metadataCacheName);
+                .doesNotContain(cacheName);
+    }
+
+    @Test
+    public void testCloseKeepsValuesCachedInMetadataCache() throws Exception {
+        String path = "/cached-value";
+        LocalMemoryMetadataStore store = newStoreNamed(storeName);
+        MetadataCache<String> cache;
+        try {
+            cache = store.getMetadataCache(String.class);
+            CompletableFuture<Void> putNotificationHandled = new CompletableFuture<>();
+            store.registerCancellableListener(notification -> {
+                if (notification.getPath().equals(path)) {
+                    putNotificationHandled.complete(null);
+                }
+            });
+            store.put(path, "\"value\"".getBytes(StandardCharsets.UTF_8), Optional.empty()).join();
+            // The store refreshes a cached value when it handles the notification of the put. After close() that
+            // refresh would fail and drop the value, so the value is cached once the notification is handled.
+            putNotificationHandled.get(10, TimeUnit.SECONDS);
+            assertThat(cache.get(path).join()).as("value loaded through the metadata cache")
+                    .contains("value");
+        } finally {
+            store.close();
+        }
+
+        assertThat(cache.getIfCached(path)).as("a value cached before the store was closed")
+                .contains("value");
     }
 
     @Test
@@ -121,14 +180,16 @@ public class AbstractMetadataStoreCacheMetricsTest {
                 .doesNotContain(metadataCacheName);
     }
 
-    @Test
-    public void testMetadataCacheCreatedAfterCloseLeavesNoMetrics() throws Exception {
+    @Test(dataProvider = "metadataCacheOverloads")
+    public void testMetadataCacheCreatedAfterCloseLeavesNoMetrics(String overload, String cacheNameSuffix,
+                                                                 MetadataCacheFactory factory) throws Exception {
+        String cacheName = storeName + cacheNameSuffix;
         LocalMemoryMetadataStore closedStore = newStoreNamed(storeName);
         closedStore.close();
 
-        closedStore.getMetadataCache(String.class);
+        factory.create(closedStore, cacheName);
         assertThat(exposedCacheNames()).as("series of a metadata cache created after the store is closed")
-                .doesNotContain(metadataCacheName);
+                .doesNotContain(cacheName);
     }
 
     private static LocalMemoryMetadataStore newStoreNamed(String name) throws Exception {
